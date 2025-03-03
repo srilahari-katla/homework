@@ -1,0 +1,124 @@
+---
+title: "Week 6 Genetic Algorithm Assignment"
+author: "Lahari Katla"
+date: "2025-03-02"
+output: html_document
+---
+
+```{r}
+library(data.table)
+library(geosphere)
+library(GA)
+library(purrr)
+library(sf)
+
+## Load the population data
+pop.data <- data.table::fread("C:/Users/lahar/Downloads/Mo_pop_Sim/Mo_pop_Sim.csv")
+str(pop.data)
+frac <- 0.0001
+small.data <- pop.data[sample(1:nrow(pop.data),
+                               size = round(nrow(pop.data) * frac),
+                               replace = F), ## extract a sample of randomlychosen 1% rows
+                        ]  ## and choose all columns
+
+## Load the FQHC data
+data_path <- 'MO_2018_Federally_Qualified_Health_Center_Locations'
+fqhc.data <- data.table(as.data.frame(st_read("C:/Users/lahar/Downloads/MO_2018_Federally_Qualified_Health_Center_Locations/MO_2018_Federally_Qualified_Health_Center_Locations",
+                     'MO_2018_Federally_Qualified_Health_Center_Locations')))
+```
+
+```{r}
+fqhc.coords <- fqhc.data[, .(Longitude, Latitude)]
+pop.coords <- small.data[, .(long, lat)]
+```
+
+
+One approach can be to use the average closeness of a location from all of the residences - those locations that are the closest to all of the residences, on average, are the ones that are more easily accessible, and therefore would/should be selected. What is the assumption that is implicit here?
+
+```{r}
+compute_avg_distance <- function(fqhc, pop_data) {
+  distances <- distHaversine(fqhc, pop_data)
+  return(mean(distances))  # Average distance in meters
+}
+
+```
+
+
+
+Another approach is to consider locations that have the highest densities of residences within a 30-mile radius (e.g., if location 1 has 59 residences and location 2 has 84 residences in a 30-mile radius, location 1 is to be considered "better" - why? because it can serve more people)
+
+```{r}
+count_nearby_residences <- function(fqhc, pop_data) {
+  distances <- distHaversine(fqhc, pop_data)
+  return(sum(distances <= 48280))  # Count residences within 30 miles
+}
+```
+
+```{r}
+# Compute scores for all FQHC locations
+fqhc.data[, avg_distance := sapply(1:nrow(fqhc.coords), function(i) 
+                                  compute_avg_distance(fqhc.coords[i, ], pop.coords))]
+
+fqhc.data[, residence_density := sapply(1:nrow(fqhc.coords), function(i) 
+                                      count_nearby_residences(fqhc.coords[i, ], pop.coords))]
+
+# Rank FQHCs (lower distance and higher density are better)
+fqhc.data[, rank_score := rank(avg_distance) + rank(-residence_density)]
+
+# Select top 8 locations
+top_fqhc <- fqhc.data[order(rank_score)][1:8]
+
+# Display selected locations
+print(top_fqhc[, .(Facility, Address, City, avg_distance, residence_density)])
+```
+
+
+```{r}
+evaluate_fitness <- function(selection) {
+  selected_fqhc <- fqhc.coords[selection == 1, ]
+  total_population <- sum(sapply(1:nrow(selected_fqhc), function(i) {
+    distances <- distHaversine(matrix(c(selected_fqhc[i, Longitude], selected_fqhc[i, Latitude]), ncol=2), pop.coords)
+    sum(distances <= 48280)
+  }))
+  return(total_population)
+}
+
+# Define Genetic Algorithm parameters
+n_fqhc <- nrow(fqhc.coords)
+pop_size <- 50
+n_generations <- 10
+
+# Run Genetic Algorithm
+GA_model <- ga(
+  type = "binary",
+  fitness = function(selection) evaluate_fitness(selection),
+  nBits = n_fqhc,
+  popSize = pop_size,
+  maxiter = n_generations,
+  run = 50,
+  elitism = 5,
+  pmutation = 0.1,
+  parallel = FALSE
+)
+
+# Extract best solution
+best_solution <- as.logical(GA_model@solution[1, ])
+selected_fqhc <- fqhc.data[best_solution, ]
+
+# Display selected locations
+print(selected_fqhc[, .(Facility, Address, City)])
+```
+
+
+
+
+
+From the above two possibilities, choose one and explain your rationale for choosing it, along with the assumptions you are making in computing the fitness of each location. Then, describe the fitness function - what is the metric that you would compute and would it be maximized or minimized? Why?
+
+
+The population density found within a 30-mile radius would serve as my primary criterion to identify locations for FQHC mental health service introduction. These services require maximum population reach as their main purpose because of which residential density stands as the primary reason for site selection. We select areas with maximum residential concentration since this strategy allows services to deliver maximal results. Ratio calculations that find average distances to all residential areas do not effectively show how major population clusters require specialized attention. A facility with low residential distance requires evaluation because it might operate within a region with scarce residents resulting in reduced population reach.
+
+Under this method the underlying theory asserts that individuals primarily use healthcare services based on their geographic closeness. The FQHC would serve residents who fall inside a 30-mile radius since we assume those individuals would plausibly visit the facility for care. Population density acts as an excellent indicator of potential mental health service demand since an increase in local resident numbers means higher demand levels.
+
+In this case the fitness function determines how well each FQHC serves the area by counting residences within thirty miles of its location. The selection process seeks to maximize this measure because our main objective involves choosing suitable locations that can reach the maximum number of people. A higher count of residences found within the specified radius indicates that the FQHC should become a site for new services. By selecting areas for mental health service deployment that benefit a high number of potential patients the approach brings improved access and service delivery efficiency.
+
